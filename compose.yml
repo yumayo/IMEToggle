@@ -1,0 +1,35 @@
+name: imetoggle
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    platform: linux/amd64
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    working_dir: /workspace
+    networks:
+      - internal
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: true
+      - type: bind
+        source: ./out/docker
+        target: /output
+      - type: volume
+        source: build-cache
+        target: /build
+    command: ["sleep", "infinity"]
+
+networks:
+  internal:
+    internal: true
+
+volumes:
+  build-cache:

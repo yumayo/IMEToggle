@@ -1,0 +1,23 @@
+if(NOT DEFINED EXECUTABLE OR NOT DEFINED OBJDUMP)
+    message(FATAL_ERROR "EXECUTABLE and OBJDUMP are required")
+endif()
+execute_process(COMMAND "${OBJDUMP}" -p "${EXECUTABLE}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE pe_info ERROR_VARIABLE error)
+if(NOT result EQUAL 0)
+    message(FATAL_ERROR "Cannot inspect Windows executable: ${error}")
+endif()
+string(REGEX MATCHALL "DLL Name: [^\r\n]+" imports "${pe_info}")
+if(NOT imports)
+    message(FATAL_ERROR "No PE DLL import table found")
+endif()
+foreach(import IN LISTS imports)
+    string(REPLACE "DLL Name: " "" dll "${import}")
+    string(STRIP "${dll}" dll)
+    string(TOLOWER "${dll}" dll_lower)
+    # These DLLs are supplied by Windows 10/11. Reject additional runtimes,
+    # including libstdc++, libgcc, libwinpthread and VC redistributables.
+    if(NOT dll_lower MATCHES "^(advapi32|gdi32|kernel32|msvcrt|shell32|user32)\\.dll$")
+        message(FATAL_ERROR "Unexpected runtime dependency: ${dll}")
+    endif()
+    message(STATUS "Windows system DLL: ${dll}")
+endforeach()
