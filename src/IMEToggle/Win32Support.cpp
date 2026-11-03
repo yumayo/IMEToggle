@@ -37,7 +37,12 @@ void show_error(HWND owner, const wchar_t* message, DWORD error) {
     MessageBoxW(owner, text.c_str(), L"IMEToggle", MB_OK | MB_ICONERROR);
 }
 
-HICON create_tray_icon(bool enabled) noexcept {
+HICON create_tray_icon(bool enabled, UINT dpi) noexcept {
+    const int width = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+    const int height = GetSystemMetricsForDpi(SM_CYSMICON, dpi);
+    if (width <= 0 || height <= 0) {
+        return nullptr;
+    }
     HDC screen = GetDC(nullptr);
     if (screen == nullptr) {
         return nullptr;
@@ -45,20 +50,21 @@ HICON create_tray_icon(bool enabled) noexcept {
     HDC memory = CreateCompatibleDC(screen);
     BITMAPINFO info{};
     info.bmiHeader.biSize = static_cast<DWORD>(sizeof(BITMAPINFOHEADER));
-    info.bmiHeader.biWidth = 32;
-    info.bmiHeader.biHeight = -32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     void* pixels = nullptr;
     HBITMAP color = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
     ReleaseDC(nullptr, screen);
-    std::array<BYTE, 128> mask_bits{};
-    HBITMAP mask = CreateBitmap(32, 32, 1, 1, mask_bits.data());
+    HBITMAP mask = CreateBitmap(width, height, 1, 1, nullptr);
     HICON icon = nullptr;
     if (memory != nullptr && color != nullptr && mask != nullptr && pixels != nullptr) {
-        HGDIOBJ previous_bitmap = SelectObject(memory, color);
-        RECT rectangle{0, 0, 32, 32};
+        HGDIOBJ previous_bitmap = SelectObject(memory, mask);
+        PatBlt(memory, 0, 0, width, height, BLACKNESS);
+        SelectObject(memory, color);
+        RECT rectangle{0, 0, width, height};
         HBRUSH brush = CreateSolidBrush(enabled ? RGB(0, 110, 85) : RGB(105, 105, 105));
         FillRect(memory, &rectangle, brush != nullptr ? brush : GetSysColorBrush(COLOR_WINDOW));
         if (brush != nullptr) {
@@ -66,7 +72,7 @@ HICON create_tray_icon(bool enabled) noexcept {
         }
         SetBkMode(memory, TRANSPARENT);
         SetTextColor(memory, RGB(255, 255, 255));
-        HFONT font = CreateFontW(-24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        HFONT font = CreateFontW(-MulDiv(height, 3, 4), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
         HGDIOBJ previous_font = font != nullptr ? SelectObject(memory, font) : nullptr;
         DrawTextW(memory, L"あ", -1, &rectangle, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -76,7 +82,8 @@ HICON create_tray_icon(bool enabled) noexcept {
         }
         GdiFlush();
         auto* bitmap_pixels = static_cast<DWORD*>(pixels);
-        for (std::size_t i = 0; i < 32 * 32; ++i) {
+        const std::size_t pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        for (std::size_t i = 0; i < pixel_count; ++i) {
             bitmap_pixels[i] |= 0xFF000000u;
         }
         SelectObject(memory, previous_bitmap);

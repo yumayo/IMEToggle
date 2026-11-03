@@ -48,12 +48,6 @@ public:
     Application& operator=(const Application&) = delete;
 
     bool start() {
-        enabled_icon_ = create_tray_icon(true);
-        paused_icon_ = create_tray_icon(false);
-        if (enabled_icon_ == nullptr || paused_icon_ == nullptr) {
-            show_error(nullptr, L"トレイアイコンを作成できませんでした。", ERROR_NOT_ENOUGH_MEMORY);
-            return false;
-        }
         WNDCLASSEXW definition{};
         definition.cbSize = static_cast<UINT>(sizeof(definition));
         definition.lpfnWndProc = window_proc;
@@ -71,9 +65,14 @@ public:
         }
         // A hidden top-level window receives Explorer-restart and session messages.
         window_ = CreateWindowExW(WS_EX_TOOLWINDOW, window_class, L"IMEToggle", WS_OVERLAPPED,
-            0, 0, 0, 0, nullptr, nullptr, instance_, this);
+            0, 0, 1, 1, nullptr, nullptr, instance_, this);
         if (window_ == nullptr) {
             show_error(nullptr, L"ウィンドウを作成できませんでした。", GetLastError());
+            return false;
+        }
+        align_with_tray();
+        if (!refresh_tray_icons()) {
+            show_error(window_, L"トレイアイコンを作成できませんでした。", ERROR_NOT_ENOUGH_MEMORY);
             return false;
         }
         active_ = this;
@@ -114,6 +113,7 @@ private:
     HHOOK hook_ = nullptr;
     HICON enabled_icon_ = nullptr;
     HICON paused_icon_ = nullptr;
+    UINT icon_dpi_ = 0;
     UINT taskbar_created_ = 0;
     bool registered_ = false;
     bool tray_added_ = false;
@@ -160,6 +160,70 @@ private:
             Shell_NotifyIconW(NIM_SETVERSION, &icon);
         }
         return tray_added_;
+    }
+
+    // The hidden owner must be on the tray's monitor so native menus and
+    // message boxes inherit the DPI of the monitor where they are displayed.
+    void align_with_point(POINT position) noexcept {
+        if (MonitorFromPoint(position, MONITOR_DEFAULTTONEAREST)
+                != MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST)) {
+            SetWindowPos(window_, nullptr, position.x, position.y, 1, 1, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    void align_with_tray() noexcept {
+        NOTIFYICONIDENTIFIER identifier{};
+        identifier.cbSize = static_cast<DWORD>(sizeof(identifier));
+        identifier.hWnd = window_;
+        identifier.uID = 1;
+        RECT rectangle{};
+        if (!tray_added_ || FAILED(Shell_NotifyIconGetRect(&identifier, &rectangle))
+                || rectangle.right <= rectangle.left || rectangle.bottom <= rectangle.top) {
+            HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+            if (taskbar == nullptr || !GetWindowRect(taskbar, &rectangle)) {
+                return;
+            }
+        }
+        align_with_point(POINT{
+            rectangle.left + (rectangle.right - rectangle.left) / 2,
+            rectangle.top + (rectangle.bottom - rectangle.top) / 2});
+    }
+
+    bool refresh_tray_icons() noexcept {
+        UINT dpi = GetDpiForWindow(window_);
+        if (dpi == 0) {
+            dpi = USER_DEFAULT_SCREEN_DPI;
+        }
+        if (dpi == icon_dpi_) {
+            return true;
+        }
+        HICON next_enabled = create_tray_icon(true, dpi);
+        HICON next_paused = create_tray_icon(false, dpi);
+        if (next_enabled == nullptr || next_paused == nullptr) {
+            if (next_enabled != nullptr) {
+                DestroyIcon(next_enabled);
+            }
+            if (next_paused != nullptr) {
+                DestroyIcon(next_paused);
+            }
+            return false;
+        }
+        HICON previous_enabled = enabled_icon_;
+        HICON previous_paused = paused_icon_;
+        enabled_icon_ = next_enabled;
+        paused_icon_ = next_paused;
+        icon_dpi_ = dpi;
+        if (tray_added_) {
+            NOTIFYICONDATAW icon = tray_data();
+            Shell_NotifyIconW(NIM_MODIFY, &icon);
+        }
+        if (previous_enabled != nullptr) {
+            DestroyIcon(previous_enabled);
+        }
+        if (previous_paused != nullptr) {
+            DestroyIcon(previous_paused);
+        }
+        return true;
     }
 
     static bool has_modifiers() noexcept {
@@ -209,7 +273,10 @@ private:
         return false;
     }
 
-    void check_errors() {
+    void on_timer() {
+        // The tray can move without the hidden window receiving a DPI change.
+        align_with_tray();
+        refresh_tray_icons();
         if (!tray_added_) {
             add_tray_icon();
         }
@@ -233,6 +300,10 @@ private:
     }
 
     void show_menu(POINT position) {
+        if (position.x == -1 && position.y == -1) {
+            GetCursorPos(&position);
+        }
+        align_with_point(position);
         const StartupState startup = read_startup(executable_);
         HMENU menu = CreatePopupMenu();
         if (menu == nullptr) {
@@ -246,9 +317,6 @@ private:
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, menu_help, L"使い方");
         AppendMenuW(menu, MF_STRING, menu_exit, L"終了");
-        if (position.x == -1 && position.y == -1) {
-            GetCursorPos(&position);
-        }
         SetForegroundWindow(window_);
         const UINT selected = static_cast<UINT>(TrackPopupMenu(menu,
             TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, position.x, position.y, 0, window_, nullptr));
@@ -279,7 +347,8 @@ private:
         }
     }
 
-    void show_help() const noexcept {
+    void show_help() noexcept {
+        align_with_tray();
         MessageBoxW(window_,
             L"F13: IMEをOFF（英数入力）\nF14: IMEをON（日本語入力）\n\n"
             L"日本語のMicrosoft IMEを選択した状態で使用してください。\n"
@@ -302,6 +371,8 @@ private:
             try {
                 if (message == app->taskbar_created_) {
                     app->tray_added_ = false;
+                    app->align_with_tray();
+                    app->refresh_tray_icons();
                     app->add_tray_icon();
                     return 0;
                 }
@@ -315,8 +386,21 @@ private:
                     return 0;
                 case WM_TIMER:
                     if (wparam == error_timer) {
-                        app->check_errors();
+                        app->on_timer();
                     }
+                    return 0;
+                case WM_DPICHANGED: {
+                    const auto& suggested = *reinterpret_cast<const RECT*>(lparam);
+                    SetWindowPos(window, nullptr, suggested.left, suggested.top,
+                        suggested.right - suggested.left, suggested.bottom - suggested.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+                    app->refresh_tray_icons();
+                    return 0;
+                }
+                case WM_DISPLAYCHANGE:
+                case WM_SETTINGCHANGE:
+                    app->align_with_tray();
+                    app->refresh_tray_icons();
                     return 0;
                 case WM_QUERYENDSESSION:
                     return TRUE;

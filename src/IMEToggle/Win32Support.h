@@ -18,7 +18,7 @@ void copy_text(wchar_t (&destination)[Size], std::wstring_view source) noexcept 
 
 std::wstring executable_path();
 void show_error(HWND owner, const wchar_t* message, DWORD error);
-HICON create_tray_icon(bool enabled) noexcept;
+HICON create_tray_icon(bool enabled, UINT dpi) noexcept;
 
 struct StartupState {
     bool enabled;
